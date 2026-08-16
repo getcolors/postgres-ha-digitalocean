@@ -25,14 +25,23 @@ direnv allow
 ## Connecting
 
 ```sh
-psql -h pg-ha.bigconfig.website -p 5432 -U postgres -d appdb   # read-write
-psql -h pg-ha.bigconfig.website -p 5433 -U postgres -d appdb   # read-only
+psql "host=pg-ha.bigconfig.website port=5432 user=postgres dbname=appdb connect_timeout=5"
+psql "host=pg-ha.bigconfig.website port=5433 user=postgres dbname=appdb connect_timeout=5"
 ```
 
 The name resolves to all three nodes. Each node's HAProxy forwards to whichever
 one holds the Patroni leader lock, and libpq tries every resolved address in
 turn — so a node being down is skipped by the client, and a failover changes
 nothing about DNS.
+
+**`connect_timeout` is required.** A node that is powered off black-holes the
+connection instead of refusing it, and libpq's default is to wait out the OS
+TCP retry — about two minutes — before trying the next address. The value to
+use is `client-connect-timeout-seconds` in `colors.yml`. Measured here with the
+leader powered off: 6 of 10 probes reached the primary in ~80 ms, 4 in ~5.1 s,
+none failed. This only applies to total node loss; a crashed PostgreSQL or a
+stopped Patroni leaves that node's HAProxy answering and the endpoint never
+pauses.
 
 Ingress is restricted to the operator CIDRs in `digitalocean-client-sources`.
 
