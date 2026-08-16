@@ -88,6 +88,20 @@ haproxy-primary-port: 5432
 haproxy-replica-port: 5433
 haproxy-stats-port: 7000
 
+# The endpoint resolves to every node, and a node that is powered off
+# black-holes the connection rather than refusing it — libpq's default is to
+# wait out the OS TCP retry, about two minutes, before trying the next address.
+# Every client must connect with this timeout:
+#
+#   psql "host=pg-ha.bigconfig.website port=5432 user=postgres dbname=appdb \
+#         connect_timeout=5"
+#
+# Measured here with one node powered off: 6 of 10 probes reached the primary in
+# ~80ms, 4 in ~5.1s, none failed. It is desired state rather than a note in the
+# README so the documented value and the value acceptance probes with cannot
+# drift apart.
+client-connect-timeout-seconds: 5
+
 # --- backups, PITR and verification ------------------------------------------
 
 pgbackrest-package-version: 2.59.0-1.pgdg24.04+1

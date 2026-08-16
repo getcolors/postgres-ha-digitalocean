@@ -5,7 +5,7 @@
       "source": "getcolors/postgres-ha",
       "sourceType": "github",
       "skillPath": "skills/package-postgres-ha-green/SKILL.md",
-      "computedHash": "ce4a1dc9652d1a64ab9f3c527740ea8f1c75575d83a6ff99248a8469c72039ef"
+      "computedHash": "15c809b124d27abd46e66fd870e26c29ef12ab354e2b86e54fd26895fb875a99"
     }
   }
 }
