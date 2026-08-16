@@ -1,0 +1,174 @@
+# Desired state for postgres-ha-digitalocean. Non-secret values only.
+# Credentials belong in the gitignored .envrc.private as COLORS_PAR_* variables.
+# Never export COLORS_PAR_PROFILE: it selects this deployment's remote state and
+# its backup repository path.
+#
+# Required credentials:
+#   DigitalOcean       COLORS_PAR_DO_TOKEN
+#   Cloudflare         COLORS_PAR_CLOUDFLARE_API_TOKEN
+#   state in R2        COLORS_PAR_R2_ACCESS_KEY_ID
+#                      COLORS_PAR_R2_SECRET_ACCESS_KEY
+#   backups in R2      COLORS_PAR_BACKUP_R2_ACCESS_KEY_ID
+#                      COLORS_PAR_BACKUP_R2_SECRET_ACCESS_KEY
+#   database           COLORS_PAR_POSTGRES_ADMIN_PASSWORD
+#                      COLORS_PAR_POSTGRES_REPLICATION_PASSWORD
+#
+# `./green build` and `./green create --dry-run` work from a fresh checkout with
+# an empty environment, and are the way to check an edit to this file. Exit
+# code 2 means validation failed and lists every problem at once.
+
+profile: postgres-ha-digitalocean
+workdir: .colors
+
+provider-compute: digitalocean
+provider-dns: cloudflare
+provider-backend: r2
+
+# Preserve this guard in committed desired state. Teardown must go through an
+# explicit one-run COLORS_PAR_COMPUTE_PREVENT_DESTROY=false override rather
+# than an edit here.
+compute-prevent-destroy: true
+
+# --- cluster -----------------------------------------------------------------
+
+cluster-name: postgres-ha
+cluster-nodes: 3
+
+# The client endpoint. It resolves to all three nodes; each runs an HAProxy that
+# forwards to whichever node currently holds the Patroni leader lock, and libpq
+# tries every resolved address in turn. A failover therefore changes nothing
+# here — no DNS write, no cloud API call.
+cluster-host: pg-ha.bigconfig.website
+
+postgres-version: 17
+postgres-port: 5432
+postgres-database: appdb
+postgres-admin-user: postgres
+postgres-replication-user: replicator
+
+# --- failover ----------------------------------------------------------------
+
+# Full Debian versions. Patroni decides when a failover happens and pgBackRest
+# decides whether a backup is restorable; neither gets to change underneath a
+# converge, so both are held at these versions on the nodes.
+patroni-package-version: 4.1.5-1.pgdg24.04+1
+patroni-rest-port: 8008
+
+# The leader lock lives for patroni-ttl seconds, which is the upper bound on how
+# long the cluster is without a primary after an unplanned loss. It must exceed
+# twice patroni-loop-wait, or the lock can expire between two health checks and
+# the cluster fails over because nothing went wrong.
+patroni-ttl: 30
+patroni-loop-wait: 10
+patroni-retry-timeout: 10
+
+# Quorum synchronous commit: one standby must acknowledge before a client is
+# told a transaction committed, so an acknowledged write survives losing the
+# primary, and the cluster still accepts writes after losing one machine.
+patroni-synchronous-node-count: 1
+
+# The quorum store, colocated on these three nodes. Pinned by release tag and by
+# the SHA-256 of the linux-amd64 tarball, so a tampered download is a failed
+# task rather than a cluster that will not form for reasons nobody can see.
+etcd-version: v3.5.33
+etcd-sha256: 5025b5b24d81a9616b6e284ccd439b9a3df055ef8fdcdc142af3ec8f6a3b3c95
+etcd-client-port: 2379
+etcd-peer-port: 2380
+
+# --- client endpoint ---------------------------------------------------------
+
+# The distribution series, asserted after install. HAProxy is the one component
+# left unpinned at the patch level: it is an Ubuntu package that receives
+# security updates inside its series, and pinning the revision would refuse them.
+haproxy-version: "2.8"
+
+# 5432 is deliberately the same number as postgres-port. PostgreSQL binds only
+# the private VPC address; HAProxy binds only the public address and loopback.
+haproxy-primary-port: 5432
+haproxy-replica-port: 5433
+haproxy-stats-port: 7000
+
+# --- backups, PITR and verification ------------------------------------------
+
+pgbackrest-package-version: 2.59.0-1.pgdg24.04+1
+backup-stanza: main
+
+# Daily full backup, on whichever node holds the leader lock.
+backup-oncalendar: "*-*-* 01:00:00"
+
+# Four full backups kept. WAL older than the oldest retained one is expired with
+# it, so this is also roughly the length of the point-in-time recovery window.
+backup-retention-full: 4
+
+# One row a minute, written only by the leader. This is what lets the verified
+# restore assert that WAL written *after* the last backup was archived and
+# replayed — a check that only replayed the backup would pass with archiving
+# completely broken.
+heartbeat-oncalendar: "*:0/1"
+heartbeat-retention-days: 7
+
+# The verified restore: restore the latest backup into a scratch directory,
+# replay every archived segment, start the result on a spare port, and require
+# its newest heartbeat to be younger than restore-check-max-lag-seconds.
+restore-check-oncalendar: "*-*-* 03:00:00"
+restore-check-port: 5442
+restore-check-max-lag-seconds: 900
+restore-check-max-age-hours: 26
+
+# --- backups in R2 -----------------------------------------------------------
+
+# Its own bucket and its own credential pair, deliberately not the state
+# bucket's: a leaked backup key must not be able to rewrite the infrastructure
+# state that describes where the cluster is.
+backup-r2-bucket: postgres-ha-backup
+backup-r2-endpoint: https://319271fed8bc6d2d9059362be1165f37.eu.r2.cloudflarestorage.com
+backup-r2-region: auto
+backup-r2-prefix: postgres-ha-digitalocean
+
+# --- DigitalOcean ------------------------------------------------------------
+
+# Nodes are named postgres-ha-1, -2 and -3.
+digitalocean-name: postgres-ha
+digitalocean-region: ams3
+digitalocean-size: s-2vcpu-4gb
+digitalocean-image: ubuntu-24-04-x64
+
+# The DigitalOcean template consumes SSH keys already registered on the account
+# — `ssh_keys = [...]` takes IDs or fingerprints and uploads nothing.
+# ~/.ssh/id_ed25519.pub is already registered as `vaultwarden-digitalocean`,
+# ID 58495393, and DigitalOcean rejects a second registration of the same public
+# key with a 422. So reference the existing one rather than creating a duplicate.
+digitalocean-ssh-keys: "58495393"
+
+# The matching private key, used by Ansible and by the operator verbs to reach
+# the nodes from here.
+digitalocean-ssh-private-key: ~/.ssh/id_ed25519
+
+# Restrict administrative SSH to the operator's current public IPv4.
+digitalocean-ssh-sources:
+  - 129.159.242.163/32
+
+# Who may reach the client endpoint ports. The same list: this cluster has no
+# application in front of it yet, and 0.0.0.0/0 is refused by validation.
+digitalocean-client-sources:
+  - 129.159.242.163/32
+
+# Discover the configured region's default VPC at runtime. There is deliberately
+# no VPC UUID, VPC CIDR, or VPC resource in desired state, and validation
+# refuses any key that would introduce one.
+digitalocean-vpc-mode: default
+
+# --- DNS ---------------------------------------------------------------------
+
+cloudflare-zone: bigconfig.website
+# Must stay false: Cloudflare's proxy speaks HTTP, not the PostgreSQL wire
+# protocol. Validation refuses true rather than letting it fail as a connection
+# reset months later.
+cloudflare-proxied: false
+# Short, so a replaced node leaves the endpoint's address set quickly.
+cloudflare-record-ttl: 60
+
+# --- R2 state backend --------------------------------------------------------
+
+r2-bucket: tofu-state-319271fed8bc6d2d9059362be1165f37-eu
+r2-endpoint: https://319271fed8bc6d2d9059362be1165f37.eu.r2.cloudflarestorage.com
