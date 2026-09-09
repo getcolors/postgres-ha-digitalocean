@@ -1,6 +1,6 @@
 # Shared compute rollout
 
-Installed package: `getcolors/postgres-ha` at published revision `36c8420fbb324e6e4217db63cfd11947cd5e6d9b`.
+Installed package: `getcolors/postgres-ha` at published revision `956058800e0f344bb23647c253ba04ad1ad73a12`.
 The installed skill directories and root launchers were copied from a verified
 Skills CLI installation of that revision. The existing skills-lock.json entries were updated from that installation.
 
@@ -24,3 +24,8 @@ Generated compute documents were present. Any rendered backend documents used
 compute state keys and contained no credentials.
 This proves offline rendering, not live credentials, migrated ownership, or
 application health.
+
+Repeated deletion after validated compute retirement resumes only local cleanup,
+without SSH keys or remote application stages. Failed ownership inspection
+still blocks deletion. The refreshed published launcher passed an additional
+offline build of this unchanged configuration in a temporary directory.
